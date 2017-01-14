@@ -20,15 +20,23 @@ import android.widget.Button;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.StringTokenizer;
+import java.util.UUID;
+
+import android.os.Vibrator;
 
 public class MainActivity extends AppCompatActivity {
 
     private BluetoothAdapter mBluetoothAdapter;
     private static final int REQUEST_ENABLE_BT = 1;    //must be greater than 0
-    private static final int REQUEST_COARSE_LOCATION = 1;
+    private static final int REQUEST_COARSE_LOCATION = 2;
+    private static final int REQUEST_VIBRATE = 3;
 
     TextView mTextView;
     Button mDiscoverButton;
@@ -62,6 +70,8 @@ public class MainActivity extends AppCompatActivity {
     //HashMap<String, Integer> mPartyMapSignalAvgs = new HashMap<String, Integer>();
     private boolean contScan = false;                                                               //PARTY RESET
 
+    Vibrator vb;
+    private boolean vibrateIsOn = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -76,6 +86,8 @@ public class MainActivity extends AppCompatActivity {
         mProgressBar = (ProgressBar) findViewById(R.id.progressBar);
         mProgressBar.setIndeterminate(true);    //infinite spinning wheel
         mProgressBar.setVisibility(View.INVISIBLE);
+
+        vb = (Vibrator) getSystemService(mContext.VIBRATOR_SERVICE);
 
         mContext = getApplicationContext();
 
@@ -145,7 +157,8 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void onClick(View v) {
                 if (canStartDiscovering && ContextCompat.checkSelfPermission(thisActivity,
-                        Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                        Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED && ContextCompat.checkSelfPermission(thisActivity,
+                        Manifest.permission.VIBRATE) == PackageManager.PERMISSION_GRANTED) {
                     if (selectedParty) {
                         resetParty();
                         Toast.makeText(mContext, "Refreshing party", Toast.LENGTH_SHORT).show();
@@ -161,6 +174,12 @@ public class MainActivity extends AppCompatActivity {
                         // this thread waiting for the user's response! After the user
                         // sees the explanation, try again to request the permission.
 
+                    } else if (ActivityCompat.shouldShowRequestPermissionRationale(thisActivity,
+                            Manifest.permission.VIBRATE)) {
+                        // Show an explanation to the user *asynchronously* -- don't block
+                        // this thread waiting for the user's response! After the user
+                        // sees the explanation, try again to request the permission.
+
                     } else {
 
                         // No explanation needed, we can request the permission.
@@ -168,6 +187,9 @@ public class MainActivity extends AppCompatActivity {
                         ActivityCompat.requestPermissions(thisActivity,
                                 new String[]{Manifest.permission.ACCESS_COARSE_LOCATION},
                                 REQUEST_COARSE_LOCATION);
+                        ActivityCompat.requestPermissions(thisActivity,
+                                new String[]{Manifest.permission.VIBRATE},
+                                REQUEST_VIBRATE);
 
                         // MY_PERMISSIONS_REQUEST_READ_CONTACTS is an
                         // app-defined int constant. The callback method gets the
@@ -187,6 +209,7 @@ public class MainActivity extends AppCompatActivity {
         devicesInPartyList = 0;
         rssiTrends.clear();
         turnOffContinuousScan();
+        cancelVibration();
     }
 
     private void startParty() {
@@ -228,11 +251,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean turnOnContinuousScan() {
+        vibrateIsOn = true;
         contScan = true;
         return contScan;
     }
 
     private boolean turnOffContinuousScan() {
+        vibrateIsOn = false;
         contScan = false;
         return contScan;
     }
@@ -245,10 +270,6 @@ public class MainActivity extends AppCompatActivity {
             selectedParty = false;
         }
         else {
-            if (contScan) {
-                //vibratePhones();  //TODO: Make the phones vibrate depending on intensity
-            }
-
             IntentFilter filter = new IntentFilter();
             filter.addAction(BluetoothDevice.ACTION_FOUND);
             filter.addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED);
@@ -313,15 +334,16 @@ public class MainActivity extends AppCompatActivity {
                     Log.d(TAG, " ---- Reached ACTION_FOUND ----");
                     BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                     String deviceName = device.getName();
-                    Toast.makeText(mContext, "Found device " + deviceName, Toast.LENGTH_SHORT).show();
+                    //if (device != null) {
+                        Toast.makeText(mContext, "Found device " + deviceName, Toast.LENGTH_SHORT).show();
 
-
-                    //TODO: Make this a checklist where you can select party members
-                    devicesInDeviceList++;
-                    deviceList += deviceName + "\n";
-                    mTextView.setText(deviceList);
-                    String deviceHardwareAddress = device.getAddress(); // MAC address
-                    mDeviceMap.add(deviceName);
+                        //TODO: Make this a checklist where you can select party members
+                        devicesInDeviceList++;
+                        deviceList += deviceName + "\n";
+                        mTextView.setText(deviceList);
+                        String deviceHardwareAddress = device.getAddress(); // MAC address
+                        mDeviceMap.add(deviceName);
+                    //}
                 }
             }
 
@@ -367,28 +389,85 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
             }
-
-
         }
     };
 
+    /*  TODO: get rid of all the null bs
+    // Get device name from ble advertised data
+    private BluetoothAdapter.LeScanCallback mScanCb = new BluetoothAdapter.LeScanCallback() {
+        @Override
+        public void onLeScan(final BluetoothDevice device, final int rssi,
+                             byte[] scanRecord) {
+            final BleAdvertisedData badata = BleUtil.parseAdertisedData(scanRecord);
+            String deviceName = device.getName();
+            if (deviceName == null) {
+                deviceName = badata.getName();
+            }
+        }
+    };
+    */
+
     private void printPartySignals() {
         partyList = "Your party: \n";
+        int intensity = 0;
+        int phoneRSSIValue = 0;
+        String signalStrength = "";
+        int numDevices = 0;
         for (String device : mPartyMap.keySet()) {
-            String signalStrength = "";
-            if (mPartyMap.get(device) >= -50) {
+            numDevices++;
+            signalStrength = "";
+            phoneRSSIValue = mPartyMap.get(device);
+            if (phoneRSSIValue >= -50) {
                 signalStrength = "Strong vibes";
-            } else if (mPartyMap.get(device) < -50 && mPartyMap.get(device) >= -80){
+            } else if (phoneRSSIValue < -50 && phoneRSSIValue >= -67){
+                signalStrength = "Good vibes";
+            } else if (phoneRSSIValue < -67 && phoneRSSIValue >= -90) {
                 signalStrength = "Ok vibes";
-            } else if (mPartyMap.get(device) < -80 && mPartyMap.get(device) >= -90) {
+            } else if (phoneRSSIValue < -90 && phoneRSSIValue >= -100) {
                 signalStrength = "Low vibes";
-            } else if (mPartyMap.get(device) < -90) {
+            } else if (phoneRSSIValue < -100) {
                 signalStrength = "Lost signal";
             }
             partyList += device + " :   " + signalStrength + "\n";
-            Log.d(TAG, "" + mPartyMap.get(device));
+            Log.d(TAG, "" + phoneRSSIValue);
+
+            intensity += phoneRSSIValue;
         }
+        intensity /= numDevices;
         mTextView.setText(partyList);
+
+        if (contScan && vb.hasVibrator()) {
+            //vibratePhones(intensity);  //TODO: Make the phones vibrate depending on intensity
+            //vb.vibrate(10000);
+            //vb.cancel();
+        }
+    }
+
+    // Vibrates host phone based on average of party signals
+    private void vibratePhones(int intensity) {
+        int gap = 0;
+        if (intensity >= -50) {
+            // Do nothing, vibrate very strongly
+        } else if (intensity < -50 && intensity >= -67){
+            gap = 10;
+        } else if (intensity < -67 && intensity >= -90) {
+            gap = 30;
+        } else if (intensity < -90 && intensity >= -100) {
+            gap = 80;
+        } else if (intensity < -100) {
+            gap = 150;
+        }
+
+        long pattern[] = {500, gap};
+
+        do {
+            vb.vibrate(pattern, -1);
+        } while (vibrateIsOn);
+    }
+
+    private void cancelVibration() {
+        vibrateIsOn = false;
+        vb.cancel();
     }
 
     @Override
